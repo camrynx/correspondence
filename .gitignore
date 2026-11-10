@@ -1,0 +1,32 @@
+# Data, trained models and results (see the README for where they come from)
+/data/
+/models/
+/results/
+wandb/
+
+# Fetched and built by scripts/setup_speech_dtw.sh
+/third_party/speech_dtw/
+
+# Experiment sandboxes, environments and outputs
+experiments/compute_data/sizes/
+experiments/compute_data/shared_box/
+experiments/compute_data/spidr_env/
+experiments/compute_data/checkpoints/
+experiments/compute_data/logs/
+experiments/compute_data/state/
+experiments/compute_data/results/
+experiments/compute_data/figures/
+experiments/ccae_runs/state/
+experiments/ccae_runs/logs/
+experiments/ccae_runs/backup_*/
+
+# Python / editors
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+build/
+.ipynb_checkpoints/
+.vscode/
+.idea/
+.DS_Store

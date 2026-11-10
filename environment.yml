@@ -1,0 +1,46 @@
+# Conda environment for training and evaluating the cAEs.
+#
+#   conda env create -f environment.yml
+#   conda activate cae
+#   bash scripts/setup_speech_dtw.sh     # DTW alignment/distance extension (see the README)
+#
+# Nicol Visser's samediff package (used by evaluation/evaluate_ap.py) is built from
+# source by the last pip line; the rust package below provides its toolchain.
+#
+# PyTorch is pinned to the CUDA 12.8 wheels. For another CUDA version (or CPU only),
+# change the --extra-index-url; see https://pytorch.org/get-started/locally/.
+
+name: cae
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - numpy
+  - scipy
+  - cython # builds third_party/speech_dtw's DTW extension
+  - c-compiler # ditto - system gcc/g++ work fine too if already installed
+  - cxx-compiler
+  - rust # builds samediff's Rust extension
+  - librosa
+  - pysoundfile
+  - ffmpeg # librosa's audio decoding backend
+  - matplotlib # samediff's plots
+  - scikit-learn # samediff's AP scoring
+  - transformers # HuBERT/WavLM feature extraction
+  - huggingface_hub
+  - tokenizers
+  - safetensors
+  - rich # samediff's progress bars
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - torch==2.11.0+cu128
+      - torchvision==0.26.0+cu128
+      - torchaudio==2.11.0
+      - tqdm
+      - wandb # training/ logging
+      - polars # samediff's pair tables
+      - tgt # samediff's TextGrid reading (make_samediff_item_file)
+      - maturin # builds samediff's Rust extension via pip
+      - fastabx # evaluation/*abx* scripts
+      - git+https://github.com/nicolvisser/samediff.git

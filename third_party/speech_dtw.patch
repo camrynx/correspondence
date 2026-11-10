@@ -1,0 +1,245 @@
+diff --git a/Makefile b/Makefile
+index 089a680..1d327f6 100644
+--- a/Makefile
++++ b/Makefile
+@@ -8,4 +8,4 @@ clean:
+ 	rm -rf speech_dtw/*.pyc
+ 
+ test:
+-	nosetests -v
++	pytest -v
+diff --git a/utils/calculate_dists_fixdim.py b/utils/calculate_dists_fixdim.py
+old mode 100755
+new mode 100644
+diff --git a/utils/calculate_dtw_costs.py b/utils/calculate_dtw_costs.py
+old mode 100755
+new mode 100644
+index 050222d..ff4f594
+--- a/utils/calculate_dtw_costs.py
++++ b/utils/calculate_dtw_costs.py
+@@ -11,6 +11,7 @@ Date: 2014, 2019
+ from __future__ import division
+ from __future__ import print_function
+ from os import path
++from pathlib import Path
+ import argparse
+ import datetime
+ import numpy as np
+@@ -44,7 +45,7 @@ def check_argv():
+         "in the same order as which the pairs occur in `pairs_fn`"
+         )
+     parser.add_argument(
+-        "--input_fmt", default="kaldi_txt", type=str, choices=["kaldi_txt", "npz"],
++        "--input_fmt", default="kaldi_txt", type=str, choices=["kaldi_txt", "npz", "npz_dir"],
+         help="the format of `features_fn` (default: %(default)s)"
+         )    
+     parser.add_argument(
+@@ -56,11 +57,23 @@ def check_argv():
+         "--metric", default="cosine", type=str, choices=["cosine", "euclidean", "euclidean_squared"],
+         help="distance metric for calculating frame similarity for DTW (default: %(default)s)"
+         )
++    parser.add_argument(
++        "--normalize_dims", dest="normalize_dims", action="store_true",
++        help="normalize each feature DIMENSION to zero mean and unit variance, pooled "
++        "over every frame in the feature set, before calculating DTWs. This is the "
++        "normalisation used by Carlin et al. (2011), the same-different paper this "
++        "evaluation comes from, which found it improved average precision for every "
++        "raw acoustic feature they tested. Distinct from --normalize_feats "
++        "(default is not to normalize)"
++        )
+     parser.add_argument(
+         "--normalize_feats", dest="normalize_feats", action="store_true",
+-        help="normalize features per frame before calculating DTWs (default is not to normalize)"
++        help="rescale each FRAME to unit L2 norm before calculating DTWs. NOTE this is "
++        "not the Carlin et al. normalisation (see --normalize_dims) and is largely "
++        "redundant under the default cosine metric, which is already invariant to "
++        "per-frame magnitude (default is not to normalize)"
+         )
+-    parser.set_defaults(normalize_feats=False)
++    parser.set_defaults(normalize_feats=False, normalize_dims=False)
+     if len(sys.argv) == 1:
+         parser.print_help()
+         sys.exit(1)
+@@ -106,10 +119,64 @@ def main():
+     elif args.input_fmt == "npz":
+         ark = np.load(features_fn)
+         ark = dict(ark)
++    elif args.input_fmt == "npz_dir":
++        # Load all NPZ files from the directory
++        ark = {}
++        features_dir = Path(features_fn)
++        for npz_file in sorted(features_dir.glob("*.npz")):
++            with np.load(npz_file, allow_pickle=False) as archive:
++                ark.update(dict(archive))
+ 
+     # sys.stdout.flush()
+ 
+-    # Normalize features per frame
++    # Normalize each feature DIMENSION to zero mean / unit variance.
++    #
++    # This is the normalisation of Carlin et al. (2011), "Rapid Evaluation of
++    # Speech Representations for Spoken Term Discovery": "normalized here
++    # refers to shifting and scaling the features along with their derivatives
++    # so that they are zero mean and unit variance". They report it improving
++    # average precision for every raw acoustic feature they tried (MFCC
++    # 0.163 -> 0.191, PLP 0.112 -> 0.177, FDLP-S 0.099 -> 0.215 under cosine).
++    #
++    # NOTE this is a different operation from --normalize_feats below, which
++    # rescales each FRAME to unit L2 norm. That one leaves the relative scale
++    # of the dimensions untouched (and is largely redundant under the cosine
++    # metric, which is already invariant to per-frame magnitude); this one
++    # equalises the dimensions against each other, which is what the paper
++    # found to matter.
++    #
++    # Statistics are pooled over every frame of every utterance in `ark`.
++    # With --input_fmt npz_dir the whole feature directory is loaded above
++    # regardless of which pairs this split scores, so every parallel DTW job
++    # derives identical mean/std and distances remain comparable across splits.
++    if args.normalize_dims:
++        dim = next(iter(ark.values())).shape[1]
++        n_frames = 0
++        total = np.zeros(dim, dtype=np.float64)
++        total_sq = np.zeros(dim, dtype=np.float64)
++        for utt_id in ark:
++            x = np.asarray(ark[utt_id], dtype=np.float64)
++            total += x.sum(axis=0)
++            total_sq += (x**2).sum(axis=0)
++            n_frames += x.shape[0]
++        mean = total/n_frames
++        std = np.sqrt(np.maximum(total_sq/n_frames - mean**2, 0))
++        std[std == 0] = 1.0  # a constant dimension carries no information
++        print(
++            "Normalizing feature dimensions (zero mean, unit variance) over",
++            n_frames, "frames from", len(ark), "segments,", dim, "dims"
++            )
++        # Cast back to float32: every worker holds the WHOLE feature set in
++        # memory (see --input_fmt npz_dir above), so keeping the normalised
++        # copy in float64 would double each worker's footprint for nothing -
++        # the DTW promotes each pair to double as it goes anyway.
++        for utt_id in ark:
++            ark[utt_id] = (
++                (np.asarray(ark[utt_id], dtype=np.float64) - mean)/std
++                ).astype(np.float32)
++
++    # Normalize features per frame (unit L2 norm per frame - NOT the Carlin
++    # et al. normalisation; see --normalize_dims above)
+     if normalize_feats:
+         print("Normalizing features")
+         for utt_id in ark:
+diff --git a/utils/calculate_dtw_paths.py b/utils/calculate_dtw_paths.py
+old mode 100755
+new mode 100644
+index 65d0844..72cd708
+--- a/utils/calculate_dtw_paths.py
++++ b/utils/calculate_dtw_paths.py
+@@ -11,8 +11,9 @@ Date: 2019
+ from __future__ import division
+ from __future__ import print_function
+ from os import path
++from pathlib import Path
+ import argparse
+-import cPickle
++import pickle
+ import datetime
+ import numpy as np
+ import sys
+@@ -46,7 +47,7 @@ def check_argv():
+         "a single path is a list of tuples of frame pairs"
+         )
+     parser.add_argument(
+-        "--input_fmt", default="kaldi_txt", type=str, choices=["kaldi_txt", "npz"],
++        "--input_fmt", default="kaldi_txt", type=str, choices=["kaldi_txt", "npz", "npz_dir"],
+         help="the format of `features_fn` (default: %(default)s)"
+         )    
+     # parser.add_argument(
+@@ -108,6 +109,13 @@ def main():
+     elif args.input_fmt == "npz":
+         ark = np.load(features_fn)
+         ark = dict(ark)
++    elif args.input_fmt == "npz_dir":
++        # Load all NPZ files from the directory
++        ark = {}
++        features_dir = Path(features_fn)
++        for npz_file in sorted(features_dir.glob("*.npz")):
++            with np.load(npz_file, allow_pickle=False) as archive:
++                ark.update(dict(archive))
+     print("Number of entries loaded:", len(ark))
+ 
+     # sys.stdout.flush()
+@@ -126,9 +134,22 @@ def main():
+     i_paths = 0
+     for i_pair, pair in enumerate(pairs):
+         utt_id_1, utt_id_2 = pair
+-        paths.append(_dtw.multivariate_dtw(
+-            np.array(ark[utt_id_1], dtype=np.double), np.array(ark[utt_id_2], dtype=np.double)
+-            )[0])
++
++        feat1 = np.ascontiguousarray(ark[utt_id_1], dtype=np.double)
++        feat2 = np.ascontiguousarray(ark[utt_id_2], dtype=np.double)
++
++        if feat1.shape[0] == 0 or feat2.shape[0] == 0:
++            print(f"\n[WARNING] Here is an empty pair!")
++            print(f"  {utt_id_1} shape: {feat1.shape}")
++            print(f"  {utt_id_2} shape: {feat2.shape}")
++        try:
++            paths.append(_dtw.multivariate_dtw(feat1, feat2)[0])
++        except Exception as e:
++            print(f"\n[ERROR] DTW failed for pair {i_pair}: {pair}")
++            print(f"  {utt_id_1} shape: {ark[utt_id_1].shape}")
++            print(f"  {utt_id_2} shape: {ark[utt_id_2].shape}")
++            print(f"  Error message: {e}")
++            raise e
+         i_paths += 1
+         if i_paths % n_paths_notify == 0:
+             sys.stdout.write('.')
+@@ -142,7 +163,7 @@ def main():
+     # Write to file
+     print("Pickling paths:", paths_pkl_fn)
+     f = open(paths_pkl_fn, "wb")
+-    cPickle.dump(paths, f, -1)
++    pickle.dump(paths, f, -1)
+     f.close()
+     # if args.binary_dists:
+     #     print("Writing distances to binary file:", distances_fn)
+diff --git a/utils/create_pair_file.py b/utils/create_pair_file.py
+old mode 100755
+new mode 100644
+diff --git a/utils/kaldi2npz.py b/utils/kaldi2npz.py
+old mode 100755
+new mode 100644
+diff --git a/utils/samediff.py b/utils/samediff.py
+old mode 100755
+new mode 100644
+index f877258..a1bff29
+--- a/utils/samediff.py
++++ b/utils/samediff.py
+@@ -189,7 +189,7 @@ def mean_average_precision(distances, labels):
+             )
+         prbs.append(prb)
+         ap_dict[target_type] = ap
+-    return np.mean(ap_dict.values()), np.mean(prbs), ap_dict
++    return np.mean(list(ap_dict.values())), np.mean(prbs), ap_dict
+ 
+ 
+ def generate_matches_array(labels):
+@@ -199,7 +199,7 @@ def generate_matches_array(labels):
+     matching or non-matching labels.
+     """
+     N = len(labels)
+-    matches = np.zeros(int(N*(N - 1)/2), dtype=np.bool)
++    matches = np.zeros(int(N*(N - 1)/2), dtype=bool)
+ 
+     # For every distance, mark whether it is a true match or not
+     cur_matches_i = 0
+@@ -220,7 +220,7 @@ def generate_type_matches_array(labels, target_type):
+     pair involving `target_type`.
+     """
+     N = len(labels)
+-    matches = np.zeros(int(N*(N - 1)/2), dtype=np.bool)
++    matches = np.zeros(int(N*(N - 1)/2), dtype=bool)
+ 
+     # For every distance, mark whether it is a true match or not
+     cur_matches_i = 0
+diff --git a/utils/split_file.py b/utils/split_file.py
+old mode 100755
+new mode 100644

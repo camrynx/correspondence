@@ -1,0 +1,16 @@
+# TODO: fill in from the paper; GitHub shows this as "Cite this repository".
+cff-version: 1.2.0
+message: "If you use this code, please cite the paper."
+title: "Lightweight Adaptation of Self-Supervised Features using Discovered Spoken-Term Pairs"
+authors:
+  - family-names: "TODO"
+    given-names: "TODO"
+preferred-citation:
+  type: conference-paper
+  title: "Lightweight Adaptation of Self-Supervised Features using Discovered Spoken-Term Pairs"
+  authors:
+    - family-names: "TODO"
+      given-names: "TODO"
+  collection-title: "TODO: venue"
+  year: 2026
+license: MIT
