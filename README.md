@@ -92,7 +92,25 @@ Outputs go to `data/Features/`, `data/Alignments/`, `models/` and `results/`.
 `experiments/` has the drivers for the amount-of-data and ccAE runs.
 
 ## How we extract features
-To do
+The way we extract features is important as it largely can determine downstream performance. 
+With too little context (audio seen during feature extraction), models (HuBERT and WavLM) perform poorly, and with too much context, the compute required is too much to fit on a GPU.
+We have three files which are important for the way we get features:
+- `windows.list` = Defines the extraction window -- the chunk of speech that is given to models such as WavLM and HuBERT to extract features from.
+- `utterances.list` = Defines continuous speech regions. This list is only used in DUSTED to find discovered terms, and its definition changes per dataset.
+- `words.list` = Defines where words are. We feature-slice words from the features obtained using windows.list to get ground-truth words to evaluate the models against.
+
+### How utterances are defined, per dataset:
+- Buckeye: A new utterance starts at every gap between consecutive words, however short. A gap is a SIL/SPN token or any untranscribed stretch, which in Buckeye is mostly the interviewer. Each utterance runs from its first word's start to its last word's end.
+- Xitsonga: Each recording is already an utterance.
+- French: Stretch of non-SIL phones (from french.phn) - we only use first 18 mins of relative, and M03_N is excluded (mostly silence).
+
+### How do we generate windows.list for every dataset:
+
+Windows are built greedily from `utterances.list`. A window starts at the first unassigned utterance and keeps adding the next utterances while it stays at most `W` long. The first utterance that doesn't fit starts a new window. Because windows always break between utterances, every word, phone and utterance falls fully inside one window.
+
+For example, with `W = 15 s`, utterances `[2, 5]`, `[7, 10]`, `[20, 30]`, `[32, 35]` give the windows `[2, 10]` and `[20, 35]`.
+
+We use `W = 90 s`. We chose this as it is the longest window we tested that can process on an 8 GB GPU: on our machine, WavLM Large peaks at 6.6 GiB at 90 s and runs out of memory at 240 s.
 
 ## Citation
 
